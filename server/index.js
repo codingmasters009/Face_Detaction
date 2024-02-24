@@ -1,13 +1,16 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
-
+const regRouter = require('./routes/userRoutes')
 const app = express();
 
 app.use(bodyParser.json());
 
 // db config
 const db = require('./config/keys').mongoURI;
+
+//Routes
+app.use('/api/reg',regRouter);
 
 // db connection
 mongoose
