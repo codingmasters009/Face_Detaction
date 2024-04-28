@@ -1,7 +1,8 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
-const regRouter = require('./routes/userRoutes')
+const userRouter = require('./routes/userRoutes');
+const dataRouter = require('./routes/infoformRoutes');
 const app = express();
 
 app.use(bodyParser.json());
@@ -10,8 +11,9 @@ app.use(bodyParser.json());
 const db = require('./config/keys').mongoURI;
 
 //Routes
-app.use('/api/reg',regRouter);
-
+app.use('/api',userRouter);
+app.use('/api',userRouter)
+app.use('/api',dataRouter)
 // db connection
 mongoose
     .connect(db)

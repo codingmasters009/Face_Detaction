@@ -1,5 +1,5 @@
-const User = require('../models/userSchema')
-
+const User = require('../models/userSchema');
+const bcrypt = require('bcryptjs');
 
 const register = async (req, res) => {
     const { username, name, password } = req.body;
@@ -24,13 +24,12 @@ const register = async (req, res) => {
     }
 };
 
-
 const login = async (req, res) => {
     const { username, password } = req.body;
 
     try {
         // Check if the user exists in the database
-        const user = await reg.findOne({ username });
+        const user = await User.findOne({ username });
 
         if (!user) {
             return res.status(400).json({ error: 'Invalid credentials' });
@@ -43,14 +42,11 @@ const login = async (req, res) => {
             return res.status(400).json({ error: 'Invalid credentials' });
         }
 
-        // Generate a JWT token for authentication
-        const token = jwt.sign({ userId: user._id }, 'your_secret_key', { expiresIn: '1h' });
-
-        res.status(200).json({ token });
+        // If the credentials are valid, send a success response
+        res.status(200).json({ msg: 'Login successful' });
     } catch (error) {
         res.status(500).json({ error: 'Internal Server Error' });
     }
 };
 
-
-module.exports={register,login};
+module.exports = { register, login };

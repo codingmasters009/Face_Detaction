@@ -2,20 +2,22 @@ const mongoose = require('mongoose');
 
 const Schema = mongoose.Schema;
 
-const regSchema = new Schema({
-
-    username:{
-        type:String,
-        require:true,
-        unique:true
-    },
+const formSchema = new Schema ({
     name:{
         type:String,
         require:true
     },
-    password:{
+    adress:{
         type:String,
         require:true
     },
+    cnic:{
+        type:String,
+        require:true
+    },
+    img:{
+        type:String,
+    }
 });
-module.exports=mongoose.model('User',regSchema)
+
+module.exports=mongoose.model('Form',formSchema)

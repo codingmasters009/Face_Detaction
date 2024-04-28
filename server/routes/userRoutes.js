@@ -1,12 +1,12 @@
 const express = require('express');
-const regRouter = express.Router();
+const userRouter = express.Router();
 
 const{
     register,
     login
-}=require('../controller/userController')
+}=require('../controller/usercontroller')
 
-regRouter.post('/',register)
+userRouter.post('/reg',register)
+userRouter.get('/log',login)
 
-
-module.exports=regRouter
+module.exports=userRouter
