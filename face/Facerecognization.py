@@ -1,6 +1,6 @@
+from deepface import DeepFace
 from flask import Flask, Response, request, jsonify  
 from flask_cors import CORS  
-import face_recognition  
 import cv2  
 import os  
 import requests
@@ -9,7 +9,7 @@ import time
 app = Flask(__name__)  
 CORS(app)
 
-image_folder = r"C:/Users/Muhammad Abdullah/OneDrive/Documents/Face_Detaction/face/client/src/images"  
+image_folder = r"C:/Users/mabdu/OneDrive/Documents/Face-Detection/face/client/src/images"  
 
 if not os.path.exists(image_folder):  
     raise FileNotFoundError(f"Directory not found: {image_folder}")  
@@ -18,19 +18,22 @@ known_face_encodings = []
 known_face_names = []  
 user_data = {}  
 
+# Process the known images and compute embeddings using DeepFace
 for filename in os.listdir(image_folder):  
     image_path = os.path.join(image_folder, filename)  
     if filename.endswith(".jpg") or filename.endswith(".png"):  
-        image = face_recognition.load_image_file(image_path)  
-        encodings = face_recognition.face_encodings(image)  
-        if encodings:  
-            known_face_encodings.append(encodings[0])  
-            known_face_names.append(filename)  
+        try:
+            # Use DeepFace to find embeddings
+            result = DeepFace.represent(image_path, model_name="VGG-Face", enforce_detection=False)
+            known_face_encodings.append(result[0]['embedding'])
+            known_face_names.append(filename)
             user_data[filename] = {  
                 "filename": filename,  
                 "description": "Some description related to the user",  
                 "additional_info": "Other relevant information"  
-            }  
+            }
+        except Exception as e:
+            print(f"Error processing {filename}: {e}")
 
 def generate_frames():  
     cap = cv2.VideoCapture(0)  
@@ -44,32 +47,269 @@ def generate_frames():
             print("Failed to grab frame.")  
             break  
 
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  
-        face_locations = face_recognition.face_locations(rgb_frame)  
-        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)  
+        # Process frame with DeepFace
+        try:
+            # Convert frame to RGB for DeepFace processing
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            result = DeepFace.find(rgb_frame, db_path=image_folder, model_name="VGG-Face", enforce_detection=False)
+            
+            # Initialize default values for bounding box and name
+            left = top = right = bottom = 0  # Default values if no face is detected
+            name_with_percentage = "Unknown"  # Default name
 
-        for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):  
-            distances = face_recognition.face_distance(known_face_encodings, face_encoding)  
-            min_distance_index = distances.argmin()  
-            min_distance = distances[min_distance_index]  
+            if len(result) > 0:
+                # Assuming we are using the first match (you can customize this logic)
+                matched_name = result[0]['identity'][0].split("\\")[-1]
+                min_distance = result[0]['distance'][0]
+                
+                if min_distance < 0.6:
+                    name_with_percentage = f"{matched_name} ({(1 - min_distance) * 100:.2f}%)"
+                    
+                    # Debug: Check if the name is set correctly
+                    print(f"Identified: {name_with_percentage}")
+                    
+                    # Send request to fetch user info
+                    response = requests.get(f"http://localhost:3001/api/user/{matched_name}")
+                    if response.status_code == 200:
+                        user_info = response.json()
+                        # Debug: Check the user information
+                        print("User Data:", user_info)
+                    else:
+                        print("User not found")
+                
+                # Assuming the results include a bounding box (you can modify based on result structure)
+                # If no bounding box provided by DeepFace, we can detect it using OpenCV
+                if 'region' in result[0]:
+                    # Extract face bounding box coordinates from DeepFace result
+                    face_region = result[0]['region']
+                    left, top, width, height = face_region['x'], face_region['y'], face_region['w'], face_region['h']
+                    right, bottom = left + width, top + height
 
-            if min_distance < 0.6:  
-                name = known_face_names[min_distance_index]  
-                match_percentage = (1 - min_distance) * 100  
-                name_with_percentage = f" ({match_percentage:.2f}%)"   
+                    # Adjust the frame to fit the detected face
+                    face_frame = frame[top:bottom, left:right]
 
-                response = requests.get(f"http://localhost:3001/api/user/{name}")
-                if response.status_code == 200:
-                    user_info = response.json()
-                    print("User Data:", user_info) 
+                    # Resize the cropped face frame to a fixed size (if required)
+                    resized_face_frame = cv2.resize(face_frame, (640, 480))  # Example resizing to fit the display
+                    frame = resized_face_frame
                 else:
-                    print("User not found")
-            else:  
-                name_with_percentage = "Unknown"  
+                    name_with_percentage = "Unknown"  
+            
+                # Draw rectangle and label on the original frame (for debugging)
+                cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)  
+                cv2.putText(frame, name_with_percentage, (left + 6, bottom - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)  
+            else:
+                name_with_percentage = "Unknown"
+                # Optionally, use face detection methods from OpenCV to find bounding boxes
+                # Example (if you want to detect faces with OpenCV itself):
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+                faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+                for (x, y, w, h) in faces:
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    cv2.putText(frame, "Face Detected", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-            cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)  
-            cv2.putText(frame, name_with_percentage, (left + 6, bottom - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)  
+        except Exception as e:
+            print(f"Error during frame processing: {e}")
+        
+        # Ensure the frame is correctly encoded and ready to be displayed
+        ret, buffer = cv2.imencode('.jpg', frame)  
+        if not ret:  
+            print("Failed to encode frame.")  
+            continue  
 
+        frame_bytes = buffer.tobytes()  
+
+        # Yield the frame as part of a response stream (Flask or similar)
+        yield (b'--frame\r\n'  
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')  
+
+        # Optionally display the frame locally for debugging
+        cv2.imshow("Frame", frame)  # Show the processed frame in a window
+
+        # Exit the loop if the user presses 'q' (for testing purposes)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+        time.sleep(0.03)
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    cap = cv2.VideoCapture(0)  
+    if not cap.isOpened():  
+        print("Error: Could not open video capture.")  
+        return  
+
+    while True:  
+        success, frame = cap.read()  
+        if not success:  
+            print("Failed to grab frame.")  
+            break  
+
+        # Process frame with DeepFace
+        try:
+            # Convert frame to RGB for DeepFace processing
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            result = DeepFace.find(rgb_frame, db_path=image_folder, model_name="VGG-Face", enforce_detection=False)
+            
+            # Initialize default values for bounding box and name
+            left = top = right = bottom = 0  # Default values if no face is detected
+            name_with_percentage = "Unknown"  # Default name
+
+            if len(result) > 0:
+                # Assuming we are using the first match (you can customize this logic)
+                matched_name = result[0]['identity'][0].split("\\")[-1]
+                min_distance = result[0]['distance'][0]
+                
+                if min_distance < 0.6:
+                    name_with_percentage = f"{matched_name} ({(1 - min_distance) * 100:.2f}%)"
+                    
+                    # Debug: Check if the name is set correctly
+                    print(f"Identified: {name_with_percentage}")
+                    
+                    # Send request to fetch user info
+                    response = requests.get(f"http://localhost:3001/api/user/{matched_name}")
+                    if response.status_code == 200:
+                        user_info = response.json()
+                        # Debug: Check the user information
+                        print("User Data:", user_info)
+                    else:
+                        print("User not found")
+                
+                # Assuming the results include a bounding box (you can modify based on result structure)
+                # If no bounding box provided by DeepFace, we can detect it using OpenCV
+                if 'region' in result[0]:
+                    # Extract face bounding box coordinates from DeepFace result
+                    face_region = result[0]['region']
+                    left, top, width, height = face_region['x'], face_region['y'], face_region['w'], face_region['h']
+                    right, bottom = left + width, top + height
+
+                    # Adjust the frame to fit the detected face
+                    face_frame = frame[top:bottom, left:right]
+
+                    # Resize the cropped face frame to a fixed size (if required)
+                    resized_face_frame = cv2.resize(face_frame, (640, 480))  # Example resizing to fit the display
+                    frame = resized_face_frame
+                else:
+                    name_with_percentage = "Unknown"  
+            
+                # Draw rectangle and label on the original frame (for debugging)
+                cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)  
+                cv2.putText(frame, name_with_percentage, (left + 6, bottom - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)  
+            else:
+                name_with_percentage = "Unknown"
+                # Optionally, use face detection methods from OpenCV to find bounding boxes
+                # Example (if you want to detect faces with OpenCV itself):
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+                faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+                for (x, y, w, h) in faces:
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    cv2.putText(frame, "Face Detected", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        except Exception as e:
+            print(f"Error during frame processing: {e}")
+        
+        # Ensure the frame is correctly encoded and ready to be displayed
+        ret, buffer = cv2.imencode('.jpg', frame)  
+        if not ret:  
+            print("Failed to encode frame.")  
+            continue  
+
+        frame_bytes = buffer.tobytes()  
+
+        # Yield the frame as part of a response stream (Flask or similar)
+        yield (b'--frame\r\n'  
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')  
+
+        # Optionally display the frame locally for debugging
+        cv2.imshow("Frame", frame)  # Show the processed frame in a window
+
+        # Exit the loop if the user presses 'q' (for testing purposes)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+        time.sleep(0.03)
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    cap = cv2.VideoCapture(0)  
+    if not cap.isOpened():  
+        print("Error: Could not open video capture.")  
+        return  
+
+    while True:  
+        success, frame = cap.read()  
+        if not success:  
+            print("Failed to grab frame.")  
+            break  
+
+        # Process frame with DeepFace
+        try:
+            # Convert frame to RGB for DeepFace processing
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            result = DeepFace.find(rgb_frame, db_path=image_folder, model_name="VGG-Face", enforce_detection=False)
+            
+            # Initialize default values for bounding box and name
+            left = top = right = bottom = 0  # Default values if no face is detected
+            name_with_percentage = "Unknown"  # Default name
+
+            if len(result) > 0:
+                # Assuming we are using the first match (you can customize this logic)
+                matched_name = result[0]['identity'][0].split("\\")[-1]
+                min_distance = result[0]['distance'][0]
+                
+                if min_distance < 0.6:
+                    name_with_percentage = f"{matched_name} ({(1 - min_distance) * 100:.2f}%)"
+                    
+                    # Debug: Check if the name is set correctly
+                    print(f"Identified: {name_with_percentage}")
+                    
+                    # Send request to fetch user info
+                    response = requests.get(f"http://localhost:3001/api/user/{matched_name}")
+                    if response.status_code == 200:
+                        user_info = response.json()
+                        # Debug: Check the user information
+                        print("User Data:", user_info)
+                    else:
+                        print("User not found")
+                
+                # Assuming the results include a bounding box (you can modify based on result structure)
+                # If no bounding box provided by DeepFace, we can detect it using OpenCV
+                if 'region' in result[0]:
+                    # Extract face bounding box coordinates from DeepFace result
+                    face_region = result[0]['region']
+                    left, top, width, height = face_region['x'], face_region['y'], face_region['w'], face_region['h']
+                    right, bottom = left + width, top + height
+
+                    # Adjust the frame to fit the detected face
+                    face_frame = frame[top:bottom, left:right]
+
+                    # Resize the cropped face frame to a fixed size (if required)
+                    resized_face_frame = cv2.resize(face_frame, (640, 480))  # Example resizing to fit the display
+                    frame = resized_face_frame
+                else:
+                    name_with_percentage = "Unknown"  
+            
+                # Draw rectangle and label on the original frame (for debugging)
+                cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)  
+                cv2.putText(frame, name_with_percentage, (left + 6, bottom - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)  
+            else:
+                name_with_percentage = "Unknown"
+                # Optionally, use face detection methods from OpenCV to find bounding boxes
+                # Example (if you want to detect faces with OpenCV itself):
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+                faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+                for (x, y, w, h) in faces:
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    cv2.putText(frame, "Face Detected", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        except Exception as e:
+            print(f"Error during frame processing: {e}")
+        
+        # Show the updated frame
         ret, buffer = cv2.imencode('.jpg', frame)  
         if not ret:  
             print("Failed to encode frame.")  
@@ -80,29 +320,205 @@ def generate_frames():
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')  
         time.sleep(0.03)
 
-def extended_processing():  
-    time.sleep(1)  
-    for i in range(10):  
-        print(f"Processing iteration {i}")  
-        time.sleep(0.1)  
+    cap = cv2.VideoCapture(0)  
+    if not cap.isOpened():  
+        print("Error: Could not open video capture.")  
+        return  
 
-def simulate_heavy_computation():  
-    time.sleep(2)  
-    for j in range(100):  
-        print(f"Heavy computation step {j}")  
-        time.sleep(0.05)  
+    while True:  
+        success, frame = cap.read()  
+        if not success:  
+            print("Failed to grab frame.")  
+            break  
 
-def complex_frame_operations(frame):  
-    for i in range(5):  
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)  
-        frame = cv2.GaussianBlur(frame, (5, 5), 0)  
-    return frame  
+        # Process frame with DeepFace
+        try:
+            # DeepFace needs the image to be in RGB format
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            result = DeepFace.find(rgb_frame, db_path=image_folder, model_name="VGG-Face", enforce_detection=False)
+            
+            # Initialize bounding box variables
+            left = top = right = bottom = 0  # Default values if no face is detected
+            name_with_percentage = "Unknown"  # Default name
 
-def additional_face_processing(face_encoding):  
-    processed_encodings = []  
-    for i in range(3):  
-        processed_encodings.append(face_recognition.face_encodings(face_encoding))  
-    return processed_encodings  
+            # Check if any matches were found
+            if len(result) > 0:
+                # Assuming we are using the first match (you can customize this logic)
+                matched_name = result[0]['identity'][0].split("\\")[-1]
+                min_distance = result[0]['distance'][0]
+                
+                if min_distance < 0.6:
+                    name_with_percentage = f"{matched_name} ({(1 - min_distance) * 100:.2f}%)"
+                    
+                    # Debug: Check if the name is set correctly
+                    print(f"Identified: {name_with_percentage}")
+                    
+                    # Send request to fetch user info
+                    response = requests.get(f"http://localhost:3001/api/user/{matched_name}")
+                    if response.status_code == 200:
+                        user_info = response.json()
+                        # Debug: Check the user information
+                        print("User Data:", user_info)
+                    else:
+                        print("User not found")
+                else:
+                    name_with_percentage = "Unknown"  
+            
+                # Assuming the results include a bounding box (you can modify based on result structure)
+                # Mock example for setting bounding box coordinates (if no bounding box returned by DeepFace):
+                left, top, right, bottom = 100, 100, 300, 300  # Set to actual values from the result
+                
+                # Draw rectangle and label on the frame
+                cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)  
+                cv2.putText(frame, name_with_percentage, (left + 6, bottom - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)  
+            else:
+                name_with_percentage = "Unknown"
+                # Optionally, use face detection methods from OpenCV to find bounding boxes
+                # Example (if you want to detect faces with OpenCV itself):
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+                faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+                for (x, y, w, h) in faces:
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    cv2.putText(frame, "Face Detected", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        except Exception as e:
+            print(f"Error during frame processing: {e}")
+        
+        # Show the updated frame
+        ret, buffer = cv2.imencode('.jpg', frame)  
+        if not ret:  
+            print("Failed to encode frame.")  
+            continue  
+
+        frame = buffer.tobytes()  
+        yield (b'--frame\r\n'  
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')  
+        time.sleep(0.03)
+
+    cap = cv2.VideoCapture(0)  
+    if not cap.isOpened():  
+        print("Error: Could not open video capture.")  
+        return  
+
+    while True:  
+        success, frame = cap.read()  
+        if not success:  
+            print("Failed to grab frame.")  
+            break  
+
+        # Process frame with DeepFace
+        try:
+            # DeepFace needs the image to be in RGB format
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            result = DeepFace.find(rgb_frame, db_path=image_folder, model_name="VGG-Face", enforce_detection=False)
+            
+            # Initialize bounding box variables
+            left = top = right = bottom = 0  # Default values if no face is detected
+            
+            # Check if any matches were found
+            if len(result) > 0:
+                # Assuming we are using the first match (you can customize this logic)
+                matched_name = result[0]['identity'][0].split("\\")[-1]
+                min_distance = result[0]['distance'][0]
+                
+                if min_distance < 0.6:
+                    name_with_percentage = f"{matched_name} ({(1 - min_distance) * 100:.2f}%)"
+                    
+                    # Send request to fetch user info
+                    response = requests.get(f"http://localhost:3001/api/user/{matched_name}")
+                    if response.status_code == 200:
+                        user_info = response.json()
+                        print("User Data:", user_info) 
+                    else:
+                        print("User not found")
+                else:
+                    name_with_percentage = "Unknown"  
+
+                # Assuming the results include a bounding box (you can modify based on result structure)
+                # Note: If DeepFace doesn't return bounding boxes, you can use cv2's face detection methods
+                # for bounding boxes. Here's a mock example for setting bounding box coordinates:
+                left, top, right, bottom = 100, 100, 300, 300  # Set to actual values from the result
+                
+                # Draw rectangle and label on the frame
+                cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)  
+                cv2.putText(frame, name_with_percentage, (left + 6, bottom - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)  
+            else:
+                name_with_percentage = "Unknown"
+                # Optionally, use face detection methods from OpenCV to find bounding boxes
+                # Example (if you want to detect faces with OpenCV itself):
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+                faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+                for (x, y, w, h) in faces:
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+        except Exception as e:
+            print(f"Error during frame processing: {e}")
+        
+        ret, buffer = cv2.imencode('.jpg', frame)  
+        if not ret:  
+            print("Failed to encode frame.")  
+            continue  
+
+        frame = buffer.tobytes()  
+        yield (b'--frame\r\n'  
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')  
+        time.sleep(0.03)
+
+    cap = cv2.VideoCapture(0)  
+    if not cap.isOpened():  
+        print("Error: Could not open video capture.")  
+        return  
+
+    while True:  
+        success, frame = cap.read()  
+        if not success:  
+            print("Failed to grab frame.")  
+            break  
+
+        # Process frame with DeepFace
+        try:
+            # DeepFace needs the image to be in RGB format
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            result = DeepFace.find(rgb_frame, db_path=image_folder, model_name="VGG-Face", enforce_detection=False)
+            
+            # Check if any matches were found
+            if len(result) > 0:
+                # Assuming we are using the first match (you can customize this logic)
+                matched_name = result[0]['identity'][0].split("\\")[-1]
+                min_distance = result[0]['distance'][0]
+                
+                if min_distance < 0.6:
+                    name_with_percentage = f"{matched_name} ({(1 - min_distance) * 100:.2f}%)"
+                    
+                    # Send request to fetch user info
+                    response = requests.get(f"http://localhost:3001/api/user/{matched_name}")
+                    if response.status_code == 200:
+                        user_info = response.json()
+                        print("User Data:", user_info) 
+                    else:
+                        print("User not found")
+                else:
+                    name_with_percentage = "Unknown"  
+
+                cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)  
+                cv2.putText(frame, name_with_percentage, (left + 6, bottom - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)  
+            else:
+                name_with_percentage = "Unknown"
+
+        except Exception as e:
+            print(f"Error during frame processing: {e}")
+        
+        ret, buffer = cv2.imencode('.jpg', frame)  
+        if not ret:  
+            print("Failed to encode frame.")  
+            continue  
+
+        frame = buffer.tobytes()  
+        yield (b'--frame\r\n'  
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')  
+        time.sleep(0.03)
 
 @app.route('/webcam')  
 def webcam_feed():  
@@ -123,130 +539,6 @@ def get_recognized_user():
         if last_recognized in user_data:
             return jsonify(user_data[last_recognized]), 200  
     return jsonify({"error": "No user recognized"}), 404 
-
-def dummy_function_a():  
-    print("This is a dummy function A")  
-    time.sleep(0.5)  
-    print("Dummy function A completed")  
-
-def dummy_function_b():  
-    print("This is a dummy function B")  
-    time.sleep(1)  
-    print("Dummy function B completed")  
-
-def dummy_function_c():  
-    print("This is a dummy function C")  
-    for i in range(5):  
-        print(f"Running iteration {i} of dummy function C")  
-        time.sleep(0.2)  
-    print("Dummy function C completed")  
-
-def dummy_function_d():  
-    print("This is a dummy function D")  
-    time.sleep(1)  
-    print("Dummy function D completed")  
-
-def extended_face_recognition(image):  
-    encodings = face_recognition.face_encodings(image)  
-    return encodings  
-
-def multiple_face_matching(encodings, known_encodings):  
-    results = []  
-    for encoding in encodings:  
-        matches = face_recognition.compare_faces(known_encodings, encoding)  
-        results.append(matches)  
-    return results  
-
-def frame_annotation(frame, text, location):  
-    cv2.putText(frame, text, location, cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)  
-    return frame  
-
-def draw_boxes_on_frame(frame, locations):  
-    for (top, right, bottom, left) in locations:  
-        cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 2)  
-    return frame  
-
-def process_user_data(user_data):  
-    processed_data = {}  
-    for key, value in user_data.items():  
-        processed_data[key] = value.upper()  
-    return processed_data  
-
-def create_user_report(user_data):  
-    report = ""  
-    for key, value in user_data.items():  
-        report += f"{key}: {value}\n"  
-    return report  
-
-def log_recognition_event(event):  
-    with open("recognition_log.txt", "a") as log_file:  
-        log_file.write(f"{event}\n")  
-
-def match_face_with_database(face_encoding):  
-    min_distance = 1.0  
-    matched_name = "Unknown"  
-    for name, encoding in zip(known_face_names, known_face_encodings):  
-        distance = face_recognition.face_distance([encoding], face_encoding)[0]  
-        if distance < min_distance:  
-            min_distance = distance  
-            matched_name = name  
-    return matched_name, min_distance  
-
-def draw_text_with_shadow(frame, text, position):  
-    x, y = position  
-    cv2.putText(frame, text, (x+2, y+2), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 3)  
-    cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)  
-
-def perform_detailed_face_analysis(face_encoding):  
-    results = []  
-    for i in range(10):  
-        results.append(face_recognition.face_distance([face_encoding], face_encoding))  
-    return results  
-
-def analyze_frame_quality(frame):  
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  
-    blur = cv2.Laplacian(gray, cv2.CV_64F).var()  
-    return blur  
-
-def simulate_user_database_lookup(name):  
-    time.sleep(1)  
-    user_info = {"name": name, "status": "active", "access_level": 5}  
-    return user_info  
-
-def frame_scaling(frame, scale=0.5):  
-    width = int(frame.shape[1] * scale)  
-    height = int(frame.shape[0] * scale)  
-    return cv2.resize(frame, (width, height))  
-
-def simulate_face_encoding_storage(encodings):  
-    stored_encodings = []  
-    for encoding in encodings:  
-        stored_encodings.append(encoding)  
-    return stored_encodings  
-
-def retrieve_encoded_faces():  
-    encoded_faces = []  
-    for encoding in known_face_encodings:  
-        encoded_faces.append(encoding)  
-    return encoded_faces  
-
-def compare_faces_with_threshold(known_encodings, face_encoding, threshold=0.6):  
-    matches = face_recognition.compare_faces(known_encodings, face_encoding, tolerance=threshold)  
-    return matches  
-
-def log_face_match_attempt(name, success):  
-    with open("match_attempt_log.txt", "a") as log_file:  
-        log_file.write(f"Match attempt for {name}: {'Success' if success else 'Failure'}\n")  
-
-def apply_frame_filter(frame):  
-    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  
-    frame = cv2.equalizeHist(frame)  
-    return frame  
-
-def prepare_final_output(frame, recognized_name):  
-    annotated_frame = frame.copy()  
-    draw_text_with_shadow(annotated_frame, recognized_name, (50, 50))  
-    return annotated_frame  
 
 if __name__ == "__main__":  
     app.run(host='0.0.0.0', port=5001)
